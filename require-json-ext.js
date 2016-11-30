@@ -1,57 +1,43 @@
 'use strict';
 
 var path = require('path');
-var helpers = require('./_helpers');
+var Config = require('./config');
+var parser = require('./dependency-parser');
+var resolve = require('./cached-resolver');
 var jsonExtRe = /\.json$/;
 
 module.exports = function(context) {
-  var target = context.getFilename();
-
-  var resolveOpts = {
-    basedir: path.dirname(target),
-    extensions: ['.js', '.json', '.node'],
-  };
+  var config = new Config(context);
 
   function validate(node) {
-    var id = helpers.getModuleId(node);
-    if (jsonExtRe.test(id)) return;
-    var resolved = helpers.resolveSync(id, resolveOpts);
-    if (jsonExtRe.test(resolved)) {
-      var basename = path.basename(id);
-      var idNode = helpers.getIdNode(node);
-      context.report({
-        node: idNode,
-        data: {basename: basename},
-        message: '"{{basename}}" missing ".json" extension.',
-        fix: function(fixer) {
-          return fixer.insertTextBeforeRange([idNode.range[1] - 1], '.json');
-        },
-      });
+    var modules = parser.getModules(node);
+    for(var index in modules){
+      var module = modules[index];
+      var id = module.name;
+      
+      if (jsonExtRe.test(id)) return;
+      var resolved = resolve.resolveSync(id, config);
+      if (jsonExtRe.test(resolved)) {
+        var basename = path.basename(id);
+        var idNode = module.node;
+        context.report({
+            node: idNode,
+            data: {basename: basename},
+            message: '"{{basename}}" missing ".json" extension.',
+            fix: function(fixer) {
+              return fixer.insertTextBeforeRange([idNode.range[1] - 1], '.json');
+            },
+          }
+        );
+      }
     }
   }
 
   return {
-    CallExpression: function(node) {
-      if (helpers.isRequireCall(node) ||
-          helpers.isRequireResolveCall(node)) {
-        validate(node);
-      }
-    },
-    ImportDeclaration: function(node) {
-      if (helpers.isImport(node)) {
-        validate(node);
-      }
-    },
-    ExportAllDeclaration: function(node) {
-      if (helpers.isExportFrom(node)) {
-        validate(node);
-      }
-    },
-    ExportNamedDeclaration: function(node) {
-      if (helpers.isExportFrom(node)) {
-        validate(node);
-      }
-    },
+    CallExpression: validate,
+    ImportDeclaration: validate,
+    ExportAllDeclaration: validate,
+    ExportNamedDeclaration: validate,
   };
 };
 

@@ -1,59 +1,35 @@
 'use strict';
-
-var path = require('path');
-var helpers = require('./_helpers');
+var Config = require('./config');
+var resolver = require('./cached-resolver');
+var parser = require('./dependency-parser');
 
 module.exports = function(context) {
-  var target = context.getFilename();
-
-  var ignore = context.options[0] && context.options[0].ignore;
-
-  var resolveOpts = {
-    basedir: path.dirname(target),
-    extensions: ['.js', '.json', '.node'],
-  };
-
-  if (context.options[0] && context.options[0].paths) {
-    resolveOpts.paths = context.options[0].paths.map(function(single_path) {
-      return path.resolve(single_path);
-    });
-  }
+  var config = new Config(context);
 
   function validate(node) {
-    var id = helpers.getModuleId(node);
-    if (ignore && ignore.indexOf(id) !== -1) return;
-    var resolved = helpers.resolveSync(id, resolveOpts);
-    if (!resolved) {
-      context.report({
-        node: helpers.getIdNode(node),
-        data: {id: id},
-        message: '"{{id}}" does not exist.',
-      });
+    var modules = parser.getDependencies(node);
+    for(var index in modules){
+      var module = modules[index];
+      var id = module.name;
+      if (config.ignore && config.ignore.some(function(expression){
+        return expression.test(id);
+      })) continue;
+      var resolved = resolver.resolveSync(id, config);
+      if (!resolved) {
+        context.report({
+          node: module.node,
+          data: {id: id},
+          message: '"{{id}}" does not exist.',
+        });
+      }
     }
   }
 
   return {
-    CallExpression: function(node) {
-      if (helpers.isRequireCall(node) ||
-          helpers.isRequireResolveCall(node)) {
-        validate(node);
-      }
-    },
-    ImportDeclaration: function(node) {
-      if (helpers.isImport(node)) {
-        validate(node);
-      }
-    },
-    ExportAllDeclaration: function(node) {
-      if (helpers.isExportFrom(node)) {
-        validate(node);
-      }
-    },
-    ExportNamedDeclaration: function(node) {
-      if (helpers.isExportFrom(node)) {
-        validate(node);
-      }
-    },
+    CallExpression: validate,
+    ImportDeclaration: validate,
+    ExportAllDeclaration: validate,
+    ExportNamedDeclaration: validate,
   };
 };
 

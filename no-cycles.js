@@ -1,8 +1,10 @@
 'use strict';
 
+var Config = require('./config');
 var fs = require('fs');
 var path = require('path');
-var helpers = require('./_helpers');
+var parser = require('./dependency-parser');
+var resolver = require('./cached-resolver');
 
 /**
  * A reference to the eslint module is needed to be able to require the same
@@ -12,7 +14,7 @@ var helpers = require('./_helpers');
 
 var eslintModule = (function() {
   var parent = module.parent;
-  var eslintLibRe = /\/node_modules\/eslint\/lib\/[^/]+\.js$/;
+  var eslintLibRe = new RegExp(`\\${path.sep}node_modules\\${path.sep}eslint\\${path.sep}lib\\${path.sep}[^\\${path.sep}]+\\.js$`);
   do {
     if (eslintLibRe.test(parent.filename)) {
       return parent;
@@ -30,7 +32,7 @@ var traverser = new Traverser();
 
 var externalRe = /^[^./]/;
 var skipExts = /\.(?:json|node)$/;
-var searchRe = /\b(?:require|import|export)\b/;
+var searchRe = /\b(?:require|import|export|define)\b/;
 
 function StorageObject() {}
 StorageObject.prototype = Object.create(null);
@@ -56,18 +58,8 @@ function read(filename) {
   }
 }
 
-function resolver(name, basedir) {
-  if (!externalRe.test(name)) {
-    var opts = {
-      basedir: basedir,
-      extensions: ['.js', '.json', '.node'],
-    };
-    var resolved = helpers.resolveSync(name, opts);
-    if (resolved && !skipExts.test(resolved)) {
-      return resolved;
-    }
-  }
-  return null;
+function resolveLocal(name, config) {
+    return resolver.resolveSync(name, config);
 }
 
 function relativizeTrace(trace, basedir) {
@@ -80,7 +72,7 @@ function relativizeTrace(trace, basedir) {
 }
 
 var depsCache = new StorageObject();
-function getDeps(filename, src, ast, context) {
+function getDeps(filename, src, ast, context, config) {
   if (depsCache[filename]) return depsCache[filename];
   var found = depsCache[filename] = [];
 
@@ -94,20 +86,19 @@ function getDeps(filename, src, ast, context) {
   if (!ast) ast = parse(src, context.parserPath, context.parserOptions);
   if (!ast) return found;
 
-  var basedir = path.dirname(filename);
-
   traverser.traverse(ast, {
     enter: function(node, parent) {
       var start = node.range ? node.range[0] : node.start;
       var end = node.range ? node.range[1] : node.end;
       var section = src.slice(start, end);
       if (!searchRe.test(section)) return this.skip();
-
-      if (helpers.isRequireCall(node) ||
-          helpers.isImport(node) ||
-          helpers.isExportFrom(node)) {
-        var id = helpers.getModuleId(node);
-        var resolved = resolver(id, basedir);
+      
+      var modules = parser.getDependencies(node, ['resolve']);
+      for(var index in modules){
+        var module = modules[index];
+        var id = module.name;
+        
+        var resolved = resolveLocal(id, config);
         if (resolved) found.push(resolved);
       }
     },
@@ -121,27 +112,28 @@ function getDeps(filename, src, ast, context) {
 //------------------------------------------------------------------------------
 
 module.exports = function(context) {
-  var target = context.getFilename();
-
-  var skip = context.options[0] && context.options[0].skip;
-  var shouldSkip = skip && skip.some(function(pattern) {
-    return RegExp(pattern).test(target);
+  var extensions = ['.js'];
+  var config = new Config(context, extensions);
+  
+  var shouldSkip = config.skip && config.skip.some(function(pattern) {
+    return RegExp(pattern).test(config.target);
   });
+  
   if (shouldSkip) {
     return NoopVisitor;
   }
 
   var seen = new StorageObject();
-  var basedir = path.dirname(target);
+  var basedir = path.dirname(config.target);
 
   function trace(filename, depth, refs) {
     if (!depth) depth = [];
     if (!refs) refs = [];
-    var deps = getDeps(filename, null, null, context);
+    var deps = getDeps(filename, null, null, context, config);
     depth.push(filename);
     for (var i = 0; i < deps.length; i++) {
       filename = deps[i];
-      if (filename === target) {
+      if (filename === config.target) {
         refs.push(depth.slice());
       } else if (!seen[filename]) {
         seen[filename] = true;
@@ -153,52 +145,39 @@ module.exports = function(context) {
   }
 
   function validate(node) {
-    var id = helpers.getModuleId(node);
-    var resolved = resolver(id, basedir);
-    if (resolved === target) {
-      context.report({
-        node: node,
-        message: 'Self-reference cycle.',
-      });
-    } else if (resolved) {
-      var refs = trace(resolved);
-      for (var i = 0; i < refs.length; i++) {
-        var prettyTrace = relativizeTrace(refs[i], basedir).join(' => ');
+    var modules = parser.getDependencies(node, ['resolve']);
+    for(var index in modules){
+      var module = modules[index];
+      var id = module.name;
+      var resolved = resolveLocal(id, config);
+      if (resolved === config.target) {
         context.report({
           node: node,
-          data: {trace: prettyTrace},
-          message: 'Cycle in {{trace}}.',
+          message: 'Self-reference cycle.',
         });
+      } else if (resolved) {
+        var refs = trace(resolved);
+        for (var i = 0; i < refs.length; i++) {
+          var prettyTrace = relativizeTrace(refs[i], basedir).join(' => ');
+          context.report({
+            node: node,
+            data: {trace: prettyTrace},
+            message: 'Cycle in {{trace}}.',
+          });
+        }
       }
     }
   }
 
   return {
-    CallExpression: function(node) {
-      // no-cycles doesn't test for "require.resolve"
-      if (helpers.isRequireCall(node)) {
-        validate(node);
-      }
-    },
-    ImportDeclaration: function(node) {
-      if (helpers.isImport(node)) {
-        validate(node);
-      }
-    },
-    ExportAllDeclaration: function(node) {
-      if (helpers.isExportFrom(node)) {
-        validate(node);
-      }
-    },
-    ExportNamedDeclaration: function(node) {
-      if (helpers.isExportFrom(node)) {
-        validate(node);
-      }
-    },
+    CallExpression: validate,
+    ImportDeclaration: validate,
+    ExportAllDeclaration: validate,
+    ExportNamedDeclaration: validate,
     'Program:exit': function(node) {
       // since this ast has already been built, and traversing is cheap,
       // run it through references.deps so it's cached for future runs.
-      getDeps(target, context.getSourceCode().text, node, context);
+      getDeps(config.target, context.getSourceCode().text, node, context, config);
     },
   };
 };
