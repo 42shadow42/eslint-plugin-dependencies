@@ -5,7 +5,7 @@ var path = require('path');
 module.exports = function(context, extensions){
     var target = context.getFilename();
     var ignore = context.options[0] && context.options[0].ignore && context.options[0].ignore.map(function(item){
-        return new RegExp(item);
+        return new RegExp('^' + item + '$');
     });
     var skip = context.options[0] && context.options[0].skip;
     

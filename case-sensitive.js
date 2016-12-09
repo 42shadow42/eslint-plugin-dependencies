@@ -25,8 +25,9 @@ function readdirSync(dirname) {
 
 // turns "/a/b/c.js" into ["/a", "/a/b", "/a/b/c.js"]
 function pathSteps(pathString) {
+  var slash = /\/|\\/;
   return pathString
-    .split('/')
+    .split(slash)
     .map(function(part, i, parts) {
       return parts.slice(0, i + 1).join('/');
     })
@@ -49,7 +50,7 @@ function getCaseSuggestion(needle, haystack) {
 module.exports = function(context) {
 
   var config = new Config(context);
-
+  
   function validate(node) {
     var modules = parser.getDependencies(node);
     
@@ -57,7 +58,7 @@ module.exports = function(context) {
       var module = modules[index];
       var id = module.name;
       var resolved = resolver.resolveSync(id, config);
-      if (!resolved || resolve.isCore(resolved)) return;
+      if (!resolved || resolve.isCore(resolved)) continue;	  
       var prefix = commondir([config.target, resolved]);
       pathSteps(resolved)
         .filter(function(step) {
@@ -65,6 +66,7 @@ module.exports = function(context) {
           return step.indexOf(prefix) !== -1;
         })
         .forEach(function(step, i, steps) {
+	
           var basename = path.basename(step);
           var dirname = path.dirname(step);
           var dirlist = readdirSync(dirname);

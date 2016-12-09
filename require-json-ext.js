@@ -10,12 +10,12 @@ module.exports = function(context) {
   var config = new Config(context);
 
   function validate(node) {
-    var modules = parser.getModules(node);
+    var modules = parser.getDependencies(node);
     for(var index in modules){
       var module = modules[index];
       var id = module.name;
       
-      if (jsonExtRe.test(id)) return;
+      if (jsonExtRe.test(id)) continue;
       var resolved = resolve.resolveSync(id, config);
       if (jsonExtRe.test(resolved)) {
         var basename = path.basename(id);
